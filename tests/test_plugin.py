@@ -158,11 +158,6 @@ def test_hostile_model_name_is_neutralised_not_truncated():
     assert "Fa|ble" not in body
 
 
-def test_submenu_marker_in_dynamic_text_is_neutralised():
-    # A leading double dash would demote the line into a submenu.
-    assert not plugin.sanitize("--sneaky").startswith("--")
-
-
 def test_shortcode_expansion_is_disabled_on_api_controlled_lines():
     # Only lines carrying API text need it; the title must keep its sfimage
     # behaviour untouched.

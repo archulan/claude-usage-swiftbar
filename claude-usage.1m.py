@@ -56,15 +56,9 @@ def sanitize(text):
 
     SwiftBar splits every output line at the first literal pipe, so a pipe
     inside dynamic text (a model name, an error reason) would silently truncate
-    the line. Newlines would likewise start a new menu item, and a leading
-    double dash would demote the line into a submenu of the one above it.
+    the line. Newlines would likewise start a new menu item.
     """
-    rendered = " ".join(str(text).replace("|", "/").split())
-
-    if rendered.startswith("--"):
-        # Non-breaking hyphens look identical but are not the submenu marker.
-        rendered = "‑‑" + rendered[2:]
-    return rendered
+    return " ".join(str(text).replace("|", "/").split())
 
 
 def line(text, **params):
