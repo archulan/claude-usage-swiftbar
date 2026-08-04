@@ -36,6 +36,12 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDS_FILE = "~/.claude/.credentials.json"
 HTTP_TIMEOUT = 10
 
+# The usage endpoint is shared with the official clients and throttles well
+# below a per-minute cadence, so a refusal is answered with a widening pause
+# rather than another attempt on the next tick.
+BACKOFF_BASE_SECONDS = 15 * 60
+BACKOFF_MAX_SECONDS = 4 * 60 * 60
+
 # Unknown severities rank as warning: a value this plugin has never seen most
 # likely means the account is in some flavour of trouble, not that all is well.
 SEVERITY_RANK = {"normal": 0, "warning": 1, "elevated": 1, "exceeded": 2, "critical": 2}
@@ -408,7 +414,7 @@ class _BlockRedirects(urllib.request.HTTPRedirectHandler):
 
 
 def fetch_usage(token):
-    """Fetches the usage payload; returns (body_bytes, error_reason).
+    """Fetches the usage payload; returns (body_bytes, error_reason, rate_limited).
 
     The request is made in-process so the token only ever exists in memory and
     the Authorization header. socket.timeout is caught explicitly because it
@@ -423,25 +429,85 @@ def fetch_usage(token):
 
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
-            return response.read(), None
+            return response.read(), None, False
     except urllib.error.HTTPError as error:
-        return None, "usage request failed (HTTP {})".format(error.code)
+        if error.code == 429:
+            return None, "rate limited by the API", True
+        return None, "usage request failed (HTTP {})".format(error.code), False
     except socket.timeout:
-        return None, "usage request timed out"
+        return None, "usage request timed out", False
     except urllib.error.URLError as error:
         if isinstance(getattr(error, "reason", None), socket.timeout):
-            return None, "usage request timed out"
-        return None, "network error"
+            return None, "usage request timed out", False
+        return None, "network error", False
     except (OSError, http.client.HTTPException):
-        return None, "network error"
+        return None, "network error", False
+
+
+def cache_dir():
+    """Returns the state directory, preferring SwiftBar's per-plugin cache."""
+    base = os.environ.get("SWIFTBAR_PLUGIN_CACHE_PATH")
+    if base:
+        return base
+    return os.path.expanduser("~/.cache/claude-usage")
 
 
 def cache_file():
-    """Returns the snapshot path, preferring SwiftBar's per-plugin cache dir."""
-    base = os.environ.get("SWIFTBAR_PLUGIN_CACHE_PATH")
-    if base:
-        return os.path.join(base, "usage.json")
-    return os.path.expanduser("~/.cache/claude-usage/usage.json")
+    """Returns the usage snapshot path."""
+    return os.path.join(cache_dir(), "usage.json")
+
+
+def backoff_file():
+    """Returns the path holding the rate-limit backoff state."""
+    return os.path.join(cache_dir(), "backoff.json")
+
+
+def backoff_seconds(consecutive, retry_after):
+    """Returns how long to wait after a rate-limit response.
+
+    The server's own hint is treated as a lower bound only: it has been
+    observed returning 0, and obeying that literally is what turns a brief
+    throttle into a sustained one. Repeated refusals widen the gap so a
+    persistent limit is not met with a constant knock.
+    """
+    delay = BACKOFF_BASE_SECONDS * (2 ** max(0, consecutive - 1))
+    delay = min(delay, BACKOFF_MAX_SECONDS)
+
+    if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+        delay = max(delay, int(retry_after))
+    return delay
+
+
+def read_backoff(path):
+    """Returns (blocked_until_epoch, consecutive_failures); zeros when absent."""
+    try:
+        with open(path) as handle:
+            state = json.load(handle)
+        until = state.get("until")
+        consecutive = state.get("consecutive")
+        if not isinstance(until, (int, float)) or not isinstance(consecutive, int):
+            return 0, 0
+        return until, consecutive
+    except (OSError, ValueError, AttributeError):
+        return 0, 0
+
+
+def write_backoff(path, until, consecutive):
+    """Records the backoff deadline, best effort."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            json.dump({"until": until, "consecutive": consecutive}, handle)
+    except OSError:
+        pass
+
+
+def clear_backoff(path):
+    """Drops the backoff state after a successful fetch."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def is_usage_payload(payload):
@@ -531,10 +597,18 @@ def local_now():
 def main():
     now = local_now()
     path = cache_file()
+    backoff_path = backoff_file()
+    blocked_until, consecutive = read_backoff(backoff_path)
     token, expires_at_ms, cred_reason = read_credentials()
 
-    if token is not None and token_is_fresh(expires_at_ms, now):
-        body, fetch_reason = fetch_usage(token)
+    if now.timestamp() < blocked_until:
+        # Holding off entirely is the point: another request here is what
+        # would keep the limit alive.
+        resume = datetime.fromtimestamp(blocked_until, timezone.utc)
+        reason = "rate limited, resuming {}".format(format_moment(resume, now))
+        state = "stale-fetch"
+    elif token is not None and token_is_fresh(expires_at_ms, now):
+        body, fetch_reason, rate_limited = fetch_usage(token)
 
         payload = None
         if body is not None:
@@ -546,8 +620,16 @@ def main():
 
         if payload is not None:
             write_cache(path, body)
+            clear_backoff(backoff_path)
             print("\n".join(render(payload, now, "fresh", None, now)))
             return
+
+        if rate_limited:
+            consecutive += 1
+            resume_at = now.timestamp() + backoff_seconds(consecutive, None)
+            write_backoff(backoff_path, resume_at, consecutive)
+            resume = datetime.fromtimestamp(resume_at, timezone.utc)
+            fetch_reason = "rate limited, resuming {}".format(format_moment(resume, now))
 
         reason = fetch_reason or "usage response unreadable"
         state = "stale-fetch"

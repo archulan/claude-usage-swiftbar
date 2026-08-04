@@ -1,4 +1,4 @@
-"""Contract tests for the pure rendering layer of claude-usage.1m.py.
+"""Contract tests for the pure rendering layer of claude-usage.15m.py.
 
 The plugin filename is not an importable module name, so the module is loaded
 from its file path. All time-dependent tests pin an aware "now" with a fixed
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-PLUGIN_PATH = Path(__file__).resolve().parent.parent / "claude-usage.1m.py"
+PLUGIN_PATH = Path(__file__).resolve().parent.parent / "claude-usage.15m.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 _spec = importlib.util.spec_from_file_location("claude_usage", PLUGIN_PATH)
@@ -335,6 +335,62 @@ def test_cache_file_is_private_to_the_user(tmp_path):
     plugin.write_cache(path, b'{"limits": []}')
 
     assert oct((tmp_path / "usage.json").stat().st_mode)[-3:] == "600"
+
+
+# --- rate-limit backoff ---
+
+
+def test_backoff_starts_far_above_the_poll_interval():
+    # A pause shorter than the refresh cadence would keep the limit alive.
+    assert plugin.backoff_seconds(1, None) >= 10 * 60
+
+
+def test_backoff_widens_with_consecutive_refusals():
+    delays = [plugin.backoff_seconds(n, None) for n in range(1, 6)]
+
+    assert delays == sorted(delays)
+    assert delays[-1] > delays[0]
+
+
+def test_backoff_is_capped():
+    assert plugin.backoff_seconds(50, None) == plugin.BACKOFF_MAX_SECONDS
+
+
+@pytest.mark.parametrize("retry_after", [0, None, -5, "soon"])
+def test_backoff_ignores_useless_server_hints(retry_after):
+    # The endpoint has been observed answering "retry-after: 0"; obeying that
+    # literally is what caused sustained throttling.
+    assert plugin.backoff_seconds(1, retry_after) >= 10 * 60
+
+
+def test_backoff_honours_a_longer_server_hint():
+    assert plugin.backoff_seconds(1, 9999) == 9999
+
+
+def test_backoff_state_round_trip(tmp_path):
+    path = str(tmp_path / "backoff.json")
+    plugin.write_backoff(path, 1234.5, 3)
+
+    assert plugin.read_backoff(path) == (1234.5, 3)
+
+
+def test_backoff_state_absent_or_corrupt_reads_as_clear(tmp_path):
+    path = str(tmp_path / "backoff.json")
+    assert plugin.read_backoff(path) == (0, 0)
+
+    with open(path, "w") as handle:
+        handle.write("{garbage")
+    assert plugin.read_backoff(path) == (0, 0)
+
+
+def test_clear_backoff_removes_state(tmp_path):
+    path = str(tmp_path / "backoff.json")
+    plugin.write_backoff(path, 1234.5, 3)
+    plugin.clear_backoff(path)
+
+    assert plugin.read_backoff(path) == (0, 0)
+    # Clearing an already-clear state must not raise.
+    plugin.clear_backoff(path)
 
 
 # --- severity colouring of dropdown lines ---

@@ -34,13 +34,17 @@ Copy or symlink the plugin into your SwiftBar plugin folder and make it executab
 ```bash
 git clone https://github.com/archulan/claude-usage-swiftbar.git
 cd claude-usage-swiftbar
-chmod +x claude-usage.1m.py
-ln -s "$PWD/claude-usage.1m.py" "$(defaults read com.ameba.SwiftBar PluginDirectory)/"
+chmod +x claude-usage.15m.py
+ln -s "$PWD/claude-usage.15m.py" "$(defaults read com.ameba.SwiftBar PluginDirectory)/"
 ```
 
-On first run macOS may ask for Keychain access to "Claude Code-credentials". Click **Always Allow**, otherwise the prompt returns every minute.
+On first run macOS may ask for Keychain access to "Claude Code-credentials". Click **Always Allow**, otherwise the prompt returns on every refresh.
 
-The refresh interval is the `1m` in the filename; rename to `claude-usage.5m.py` for a 5-minute cadence.
+The refresh interval is the `15m` in the filename. Please do not shorten it much: the usage endpoint is shared with the official Claude clients and rate limits well below a per-minute cadence, and a plugin that polls too hard will get itself (and the usage view in your other Claude apps) throttled.
+
+## Rate limiting
+
+If the endpoint answers with a 429, the plugin stops requesting rather than retrying on the next tick. It waits 15 minutes, doubling up to 4 hours if the refusals continue, and the dropdown shows when it will try again. The wait is deliberately not driven by the server's `Retry-After` value alone, which has been observed as `0`. A successful fetch clears the backoff.
 
 ## Stale token behaviour
 
@@ -48,7 +52,7 @@ The plugin is passive by design. When the access token expires (you have not use
 
 ## Troubleshooting
 
-- Run it manually to see the raw output: `./claude-usage.1m.py`
+- Run it manually to see the raw output: `./claude-usage.15m.py`
 - "Claude Code credentials not found": log in to Claude Code. The plugin reads the Keychain item `Claude Code-credentials`, falling back to `~/.claude/.credentials.json`.
 - Grey title with a clock symbol: token expired, open Claude Code.
 - Grey title with a warning triangle: the usage endpoint failed; the dropdown shows the reason.
