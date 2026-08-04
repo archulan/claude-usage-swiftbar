@@ -1,0 +1,12 @@
+{
+  "limits": [
+    {
+      "kind": "session",
+      "group": "session",
+      "percent": 7,
+      "severity": "normal",
+      "scope": null,
+      "is_active": true
+    }
+  ]
+}
