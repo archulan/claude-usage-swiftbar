@@ -287,19 +287,24 @@ def spend_line(spend):
 def build_title(slots, worst, state):
     """Builds the menu bar title line for the given freshness state.
 
-    Titles get a single named colour at most: light/dark colour pairs resolve
-    against the system theme rather than the actual status bar background, so
-    a pair can render illegibly. Uncoloured text always adapts.
+    The title carries no colour. The menu bar is translucent, so whatever the
+    wallpaper puts behind it sets the real contrast, and text colour is
+    resolved from the system light/dark setting, which cannot see that
+    backdrop. Symbols are resolved against the status bar itself and stay
+    legible, so state and severity are carried by a symbol and the digits keep
+    the system colour that always adapts.
     """
     digits = "·".join(percent_text(slots.get(kind)) for kind in TITLE_SLOTS) + "%"
 
-    if state == "fresh":
-        return line(digits, color=SEVERITY_COLOR.get(worst))
     if state == "stale-token":
-        return line(digits, color="gray", sfimage="clock")
+        return line(digits, sfimage="clock")
     if state == "stale-fetch":
-        return line(digits, color="gray", sfimage="exclamationmark.triangle")
-    return line("", color="gray", sfimage="exclamationmark.triangle")
+        return line(digits, sfimage="exclamationmark.triangle")
+    if state == "error":
+        return line("", sfimage="exclamationmark.triangle")
+    if worst >= 1:
+        return line(digits, sfimage="exclamationmark.triangle")
+    return line(digits)
 
 
 def format_updated(fetched_at, now):

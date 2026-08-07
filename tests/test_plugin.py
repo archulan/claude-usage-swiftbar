@@ -53,40 +53,55 @@ def test_title_renders_dash_for_missing_slots():
     assert title_text(lines) == "7·-·-%"
 
 
-@pytest.mark.parametrize(
-    "name,color",
-    [("warning", "orange"), ("exceeded", "red")],
-)
-def test_title_color_tracks_worst_severity(name, color):
+@pytest.mark.parametrize("name", ["normal", "warning", "exceeded", "unknown", "sparse"])
+def test_title_is_never_coloured(name):
+    # The menu bar is translucent, so text colour is resolved from a signal
+    # that cannot see the wallpaper behind it. Only symbols stay legible.
     lines = plugin.render(fixture(name), NOW, "fresh", None, NOW)
 
-    assert "color=" + color in title_of(lines)
-    # A comma would mean a light/dark pair, which resolves against the wrong
-    # appearance source for menu bar titles.
-    assert "," not in title_of(lines)
+    assert "color=" not in title_of(lines)
+
+
+@pytest.mark.parametrize("state", ["fresh", "stale-token", "stale-fetch", "error"])
+def test_title_is_never_coloured_in_any_state(state):
+    payload = None if state == "error" else fixture("exceeded")
+    lines = plugin.render(payload, NOW, state, "reason", NOW)
+
+    assert "color=" not in title_of(lines)
+
+
+@pytest.mark.parametrize("name", ["warning", "exceeded"])
+def test_title_flags_severity_with_a_symbol(name):
+    lines = plugin.render(fixture(name), NOW, "fresh", None, NOW)
+
+    assert "sfimage=exclamationmark.triangle" in title_of(lines)
+
+
+def test_title_carries_no_symbol_when_everything_is_normal():
+    lines = plugin.render(fixture("normal"), NOW, "fresh", None, NOW)
+
+    assert "sfimage=" not in title_of(lines)
 
 
 def test_title_treats_unknown_severity_as_warning():
     lines = plugin.render(fixture("unknown"), NOW, "fresh", None, NOW)
 
-    assert "color=orange" in title_of(lines)
+    assert "sfimage=exclamationmark.triangle" in title_of(lines)
 
 
-def test_title_greyed_with_clock_when_token_stale():
+def test_title_shows_clock_when_token_stale():
     lines = plugin.render(
         fixture("normal"), NOW, "stale-token", "token expired, open Claude Code to refresh", NOW - timedelta(hours=3)
     )
 
-    assert "color=gray" in title_of(lines)
     assert "sfimage=clock" in title_of(lines)
 
 
-def test_title_greyed_with_warning_symbol_when_fetch_fails():
+def test_title_shows_warning_symbol_when_fetch_fails():
     lines = plugin.render(
         fixture("normal"), NOW, "stale-fetch", "usage request failed (HTTP 500)", NOW - timedelta(minutes=5)
     )
 
-    assert "color=gray" in title_of(lines)
     assert "sfimage=exclamationmark.triangle" in title_of(lines)
 
 
