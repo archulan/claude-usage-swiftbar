@@ -1,4 +1,4 @@
-"""Contract tests for the pure rendering layer of claude-usage.15m.py.
+"""Contract tests for the pure rendering layer of claude-usage.5m.py.
 
 The plugin filename is not an importable module name, so the module is loaded
 from its file path. All time-dependent tests pin an aware "now" with a fixed
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-PLUGIN_PATH = Path(__file__).resolve().parent.parent / "claude-usage.15m.py"
+PLUGIN_PATH = Path(__file__).resolve().parent.parent / "claude-usage.5m.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 _spec = importlib.util.spec_from_file_location("claude_usage", PLUGIN_PATH)

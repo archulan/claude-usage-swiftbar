@@ -34,13 +34,13 @@ Copy or symlink the plugin into your SwiftBar plugin folder and make it executab
 ```bash
 git clone https://github.com/archulan/claude-usage-swiftbar.git
 cd claude-usage-swiftbar
-chmod +x claude-usage.15m.py
-ln -s "$PWD/claude-usage.15m.py" "$(defaults read com.ameba.SwiftBar PluginDirectory)/"
+chmod +x claude-usage.5m.py
+ln -s "$PWD/claude-usage.5m.py" "$(defaults read com.ameba.SwiftBar PluginDirectory)/"
 ```
 
 On first run macOS may ask for Keychain access to "Claude Code-credentials". Click **Always Allow**, otherwise the prompt returns on every refresh.
 
-The refresh interval is the `15m` in the filename. Please do not shorten it much: the usage endpoint is shared with the official Claude clients and rate limits well below a per-minute cadence, and a plugin that polls too hard will get itself (and the usage view in your other Claude apps) throttled.
+The refresh interval is the `5m` in the filename. Take care before shortening it further: the usage endpoint is shared with the official Claude clients and rate limits well below a per-minute cadence, and a plugin that polls too hard will get itself (and the usage view in your other Claude apps) throttled. A one-minute interval was measured triggering a 429 within half an hour.
 
 ## Rate limiting
 
@@ -52,7 +52,7 @@ The plugin is passive by design. When the access token expires (you have not use
 
 ## Troubleshooting
 
-- Run it manually to see the raw output: `./claude-usage.15m.py`
+- Run it manually to see the raw output: `./claude-usage.5m.py`
 - "Claude Code credentials not found": log in to Claude Code. The plugin reads the Keychain item `Claude Code-credentials`, falling back to `~/.claude/.credentials.json`.
 - Grey title with a clock symbol: token expired, open Claude Code.
 - Grey title with a warning triangle: the usage endpoint failed; the dropdown shows the reason.
