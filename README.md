@@ -3,7 +3,7 @@
 A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that shows your claude.ai subscription usage limits in the macOS menu bar.
 
 ```text
-7·42·13%
+S7·W42·F13%
 ─────────────────────────────────────────
 Session 7% · resets 17:10 (in 2h 10m)
 Weekly (all models) 42% · resets Sun 18:00 (in 5d 3h)
@@ -15,7 +15,9 @@ Updated 14:59
 Refresh
 ```
 
-The menu bar shows the three limit percentages (5-hour session, weekly all models, weekly model-scoped). The title turns orange or red when any limit reaches warning or exceeded severity. The dropdown adds reset times in your local timezone, countdowns, and your usage-credit balance.
+The menu bar shows the three limit percentages, tagged `S` for the 5-hour session, `W` for weekly across all models, and the model's initial for the weekly model-scoped limit. A warning symbol joins them when any limit needs attention. The dropdown adds reset times in your local timezone, countdowns, and your usage-credit balance.
+
+The title itself is never coloured. The menu bar is translucent, so the wallpaper behind it decides the real contrast, and custom text colours are resolved from the system light/dark setting, which cannot see that backdrop. Symbols are resolved against the status bar itself, so they stay readable over anything. Dropdown rows, which sit on a solid background, do use severity colours.
 
 ## How it works
 
@@ -48,14 +50,14 @@ If the endpoint answers with a 429, the plugin stops requesting rather than retr
 
 ## Stale token behaviour
 
-The plugin is passive by design. When the access token expires (you have not used Claude Code recently) or the API errors, it keeps showing the last known snapshot greyed out with a clock or warning symbol and a hint line. Open Claude Code and run anything to refresh the token. The plugin never uses the refresh token, so it cannot interfere with Claude Code's session.
+The plugin is passive by design. When the access token expires (you have not used Claude Code recently) or the API errors, it keeps showing the last known snapshot marked with a clock or warning symbol and a hint line. Open Claude Code and run anything to refresh the token. The plugin never uses the refresh token, so it cannot interfere with Claude Code's session.
 
 ## Troubleshooting
 
 - Run it manually to see the raw output: `./claude-usage.5m.py`
 - "Claude Code credentials not found": log in to Claude Code. The plugin reads the Keychain item `Claude Code-credentials`, falling back to `~/.claude/.credentials.json`.
-- Grey title with a clock symbol: token expired, open Claude Code.
-- Grey title with a warning triangle: the usage endpoint failed; the dropdown shows the reason.
+- Clock symbol in the title: token expired, open Claude Code.
+- Warning triangle in the title: either a limit needs attention or the usage endpoint failed; the dropdown distinguishes them.
 - Cached snapshot lives in SwiftBar's per-plugin cache folder (or `~/.cache/claude-usage/usage.json`). It is the last usage response stored verbatim, so it includes your credit balance alongside the percentages and reset times. The file is written user-only (0600); delete it any time.
 
 ## Disclaimer

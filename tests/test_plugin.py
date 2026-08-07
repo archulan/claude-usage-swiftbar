@@ -43,14 +43,40 @@ def title_text(lines):
 def test_title_shows_three_slots_when_fresh():
     lines = plugin.render(fixture("normal"), NOW, "fresh", None, NOW)
 
-    assert title_text(lines) == "7·42·13%"
+    assert title_text(lines) == "S7·W42·F13%"
     assert "color=" not in title_of(lines)
 
 
 def test_title_renders_dash_for_missing_slots():
     lines = plugin.render(fixture("sparse"), NOW, "fresh", None, NOW)
 
-    assert title_text(lines) == "7·-·-%"
+    assert title_text(lines) == "S7·W-·M-%"
+
+
+def test_title_initial_follows_the_model_the_api_reports():
+    scoped = {"kind": "weekly_scoped", "scope": {"model": {"display_name": "Opus"}}}
+
+    assert plugin.slot_initial("weekly_scoped", scoped) == "O"
+    assert plugin.slot_initial("session", {}) == "S"
+    assert plugin.slot_initial("weekly_all", {}) == "W"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        None,
+        {"kind": "weekly_scoped"},
+        {"kind": "weekly_scoped", "scope": None},
+        {"kind": "weekly_scoped", "scope": {"model": {"display_name": "   "}}},
+        {"kind": "weekly_scoped", "scope": {"model": {"display_name": "!bang"}}},
+    ],
+)
+def test_unnamed_model_falls_back_without_colliding_with_weekly(entry):
+    # Deriving the letter from the generic label would yield "W" twice.
+    initial = plugin.slot_initial("weekly_scoped", entry)
+
+    assert initial == "M"
+    assert initial != plugin.slot_initial("weekly_all", {})
 
 
 @pytest.mark.parametrize("name", ["normal", "warning", "exceeded", "unknown", "sparse"])
@@ -437,7 +463,7 @@ def test_non_finite_percent_renders_dash_instead_of_crashing(literal):
     payload = json.loads('{"limits": [{"kind": "session", "percent": %s}]}' % literal)
     lines = plugin.render(payload, NOW, "fresh", None, NOW)
 
-    assert title_text(lines) == "-·-·-%"
+    assert title_text(lines) == "S-·W-·M-%"
 
 
 def test_all_missing_slots_title_is_not_a_submenu_marker():

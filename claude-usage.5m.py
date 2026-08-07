@@ -128,6 +128,20 @@ def classify_limits(limits):
     return slots, extras
 
 
+def scoped_model_name(entry):
+    """Returns the model name a scoped limit applies to, or None."""
+    if not isinstance(entry, dict):
+        return None
+
+    scope = entry.get("scope")
+    model = scope.get("model") if isinstance(scope, dict) else None
+    name = model.get("display_name") if isinstance(model, dict) else None
+
+    if isinstance(name, str) and name.strip():
+        return sanitize(name)
+    return None
+
+
 def limit_label(entry):
     """Returns the display name for a limit entry."""
     kind = entry.get("kind")
@@ -137,12 +151,7 @@ def limit_label(entry):
     if kind == "weekly_all":
         return "Weekly (all models)"
     if kind == "weekly_scoped":
-        scope = entry.get("scope")
-        model = scope.get("model") if isinstance(scope, dict) else None
-        name = model.get("display_name") if isinstance(model, dict) else None
-        if isinstance(name, str) and name.strip():
-            return sanitize(name)
-        return "Weekly (model)"
+        return scoped_model_name(entry) or "Weekly (model)"
     if isinstance(kind, str) and kind:
         return sanitize(kind.replace("_", " ").title())
     return "Limit"
@@ -284,6 +293,25 @@ def spend_line(spend):
     )
 
 
+def slot_initial(kind, entry):
+    """Returns the one-letter tag naming a slot in the menu bar title.
+
+    The scoped slot takes its letter from whatever model the API reports, so a
+    rename upstream carries through without a code change.
+    """
+    if kind == "session":
+        return "S"
+    if kind == "weekly_all":
+        return "W"
+
+    # "M" for an unnamed model, which also avoids colliding with the weekly
+    # slot's letter when the generic label would start with the same one.
+    name = scoped_model_name(entry)
+    if name and name[0].isalnum():
+        return name[0].upper()
+    return "M"
+
+
 def build_title(slots, worst, state):
     """Builds the menu bar title line for the given freshness state.
 
@@ -294,7 +322,9 @@ def build_title(slots, worst, state):
     legible, so state and severity are carried by a symbol and the digits keep
     the system colour that always adapts.
     """
-    digits = "·".join(percent_text(slots.get(kind)) for kind in TITLE_SLOTS) + "%"
+    digits = "·".join(
+        slot_initial(kind, slots.get(kind)) + percent_text(slots.get(kind)) for kind in TITLE_SLOTS
+    ) + "%"
 
     if state == "stale-token":
         return line(digits, sfimage="clock")
