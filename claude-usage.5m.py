@@ -544,8 +544,8 @@ class _BlockRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch_usage(token):
-    """Fetches the usage payload; returns (body_bytes, error_reason, rate_limited).
+def fetch_json(url, token, what):
+    """Fetches an API document; returns (body_bytes, error_reason, rate_limited).
 
     The request is made in-process so the token only ever exists in memory and
     the Authorization header. socket.timeout is caught explicitly because it
@@ -553,7 +553,7 @@ def fetch_usage(token):
     urlopen only wraps OSError into URLError.
     """
     request = urllib.request.Request(
-        USAGE_URL,
+        url,
         headers={"Authorization": "Bearer " + token, "anthropic-beta": OAUTH_BETA},
     )
     opener = urllib.request.build_opener(_BlockRedirects)
@@ -564,15 +564,20 @@ def fetch_usage(token):
     except urllib.error.HTTPError as error:
         if error.code == 429:
             return None, "rate limited by the API", True
-        return None, "usage request failed (HTTP {})".format(error.code), False
+        return None, "{} request failed (HTTP {})".format(what, error.code), False
     except socket.timeout:
-        return None, "usage request timed out", False
+        return None, "{} request timed out".format(what), False
     except urllib.error.URLError as error:
         if isinstance(getattr(error, "reason", None), socket.timeout):
-            return None, "usage request timed out", False
+            return None, "{} request timed out".format(what), False
         return None, "network error", False
     except (OSError, http.client.HTTPException):
         return None, "network error", False
+
+
+def fetch_usage(token):
+    """Fetches the usage payload; returns (body_bytes, error_reason, rate_limited)."""
+    return fetch_json(USAGE_URL, token, "usage")
 
 
 def cache_dir():
@@ -655,9 +660,7 @@ def write_cache(path, raw):
     """Stores the raw response as the last-known-good snapshot, best effort.
 
     The body is validated before writing so a bad response can never destroy a
-    good snapshot. The temp file lives in the destination directory because
-    os.replace is only atomic within one filesystem, and 0600 keeps the usage
-    data private to the user.
+    good snapshot.
     """
     try:
         if not is_usage_payload(json.loads(raw)):
@@ -665,6 +668,15 @@ def write_cache(path, raw):
     except ValueError:
         return
 
+    _write_private(path, raw)
+
+
+def _write_private(path, raw):
+    """Replaces a file atomically, readable by the user only, best effort.
+
+    The temp file lives in the destination directory because os.replace is only
+    atomic within one filesystem.
+    """
     directory = os.path.dirname(path)
     tmp_path = None
     try:

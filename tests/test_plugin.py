@@ -6,8 +6,11 @@ UTC+10 offset so results never depend on the machine's timezone.
 """
 
 import importlib.util
+import io
 import json
 import re
+import socket
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -551,6 +554,41 @@ def test_cache_file_is_private_to_the_user(tmp_path):
     plugin.write_cache(path, b'{"limits": []}')
 
     assert oct((tmp_path / "usage.json").stat().st_mode)[-3:] == "600"
+
+
+# --- authenticated requests ---
+
+
+class FailingOpener:
+    """Stands in for a urllib opener whose every request raises."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def open(self, request, timeout=None):
+        raise self.error
+
+
+def http_error(code):
+    # Without a body file, HTTPError's attribute lookup raises on Python 3.9.
+    return urllib.error.HTTPError("https://example.test", code, "refused", None, io.BytesIO())
+
+
+@pytest.mark.parametrize(
+    "error,reason,rate_limited",
+    [
+        (http_error(429), "rate limited by the API", True),
+        (http_error(500), "thing request failed (HTTP 500)", False),
+        (socket.timeout(), "thing request timed out", False),
+        (urllib.error.URLError(socket.timeout()), "thing request timed out", False),
+        (urllib.error.URLError("refused"), "network error", False),
+        (OSError("reset"), "network error", False),
+    ],
+)
+def test_fetch_json_names_the_request_in_its_failure_reason(monkeypatch, error, reason, rate_limited):
+    monkeypatch.setattr(plugin.urllib.request, "build_opener", lambda *_: FailingOpener(error))
+
+    assert plugin.fetch_json("https://example.test", "token", "thing") == (None, reason, rate_limited)
 
 
 # --- rate-limit backoff ---
