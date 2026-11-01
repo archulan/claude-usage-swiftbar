@@ -1,8 +1,8 @@
-"""Contract tests for the pure rendering layer of claude-usage.5m.py.
+"""Contract tests for claude-usage.5m.py.
 
 The plugin filename is not an importable module name, so the module is loaded
 from its file path. All time-dependent tests pin an aware "now" with a fixed
-UTC+10 offset so results never depend on the machine's timezone.
+UTC offset so results never depend on the machine's timezone.
 """
 
 import importlib.util
@@ -28,7 +28,7 @@ ULTRA_NOW = datetime(2026, 11, 2, 9, 0, tzinfo=timezone(timedelta(hours=11)))
 
 
 def fixture(name):
-    """Loads a synthetic payload dict from tests/fixtures."""
+    """Loads a payload dict from tests/fixtures."""
     with open(FIXTURES / (name + ".json")) as f:
         return json.load(f)
 
@@ -512,7 +512,7 @@ def test_oversized_percent_renders_dash_instead_of_crashing():
     assert plugin.percent_text({"percent": 10 ** 400}) == "-"
 
 
-# --- cache round-trip (only non-pure test; exercises real files in tmp_path) ---
+# --- cache round-trip (exercises real files in tmp_path) ---
 
 
 def test_cache_round_trip_preserves_payload(tmp_path):

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # <xbar.title>Claude Usage</xbar.title>
-# <xbar.version>v1.0</xbar.version>
+# <xbar.version>v1.1</xbar.version>
 # <xbar.author>Archulan</xbar.author>
 # <xbar.author.github>archulan</xbar.author.github>
-# <xbar.desc>Shows claude.ai subscription usage limits (session, weekly, per-model) with reset times.</xbar.desc>
+# <xbar.desc>Shows claude.ai subscription usage limits (session where your plan has one, weekly, per-model) with reset times, your plan and included credits.</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 # <xbar.abouturl>https://github.com/archulan/claude-usage-swiftbar</xbar.abouturl>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -12,9 +12,10 @@
 """SwiftBar plugin showing claude.ai subscription usage limits in the menu bar.
 
 Reads the Claude Code OAuth access token (Keychain, with a file fallback) and
-queries the same usage endpoint the official clients use. Rendering is kept as
-pure functions over the parsed payload so the behaviour is testable without
-touching the network or the Keychain.
+queries the same usage endpoint the official clients use, plus the profile
+endpoint once a day for the plan name. Rendering is kept as pure functions over
+the parsed payload so the behaviour is testable without touching the network or
+the Keychain.
 """
 
 import http.client
