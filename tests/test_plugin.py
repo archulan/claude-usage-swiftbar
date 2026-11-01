@@ -224,11 +224,18 @@ def test_hostile_model_name_is_neutralised_not_truncated():
     assert "Fa|ble" not in body
 
 
-def test_shortcode_expansion_is_disabled_on_api_controlled_lines():
+@pytest.mark.parametrize(
+    "name,now,prefixes",
+    [
+        ("normal", NOW, ("Session", "Weekly", "Fable", "Usage credits")),
+        ("ultra", ULTRA_NOW, ("Ultra plan", "Weekly", "Fable", "Cloud session credits")),
+    ],
+)
+def test_shortcode_expansion_is_disabled_on_api_controlled_lines(name, now, prefixes):
     # Only lines carrying API text need it; the title must keep its sfimage
     # behaviour untouched.
-    lines = plugin.render(fixture("normal"), NOW, "fresh", None, NOW)
-    api_lines = [r for r in lines if r.startswith(("Session", "Weekly", "Fable", "Usage credits"))]
+    lines = plugin.render(fixture(name), now, "fresh", None, now, plan="Ultra plan")
+    api_lines = [r for r in lines if r.startswith(prefixes)]
 
     assert len(api_lines) == 4
     for rendered in api_lines:
@@ -706,6 +713,210 @@ def test_dropdown_stays_quiet_when_only_unknown_limits_are_reported():
 
     assert not any(rendered.startswith("No usage limits reported") for rendered in lines)
     assert any(rendered.startswith("Monthly Beta 5%") for rendered in lines)
+
+
+# --- plan name ---
+
+
+def test_extract_plan_label_prefers_the_full_label():
+    assert plugin.extract_plan_label(fixture("profile_ultra")) == "Ultra plan"
+
+
+def test_extract_plan_label_falls_back_to_the_name():
+    assert plugin.extract_plan_label({"organization": {"plan_display_name": "Ultra"}}) == "Ultra"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        None,
+        [],
+        {},
+        {"organization": None},
+        {"organization": {"plan_display_label": "   "}},
+        {"organization": {"plan_display_label": 42}},
+        {"organization": {"plan_display_label": ["Ultra"]}},
+        {"organization": {"rate_limit_tier": "default_claude_max_20x"}},
+    ],
+)
+def test_extract_plan_label_returns_none_without_a_usable_label(profile):
+    assert plugin.extract_plan_label(profile) is None
+
+
+def test_plan_is_the_first_dropdown_row_when_known():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW, plan="Ultra plan")
+
+    assert lines[2] == "Ultra plan | emojize=false symbolize=false"
+
+
+def test_ultra_dropdown_follows_the_settings_page_order():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW, plan="Ultra plan")
+
+    assert [rendered.split(" ")[0] for rendered in lines[2:6]] == ["Ultra", "Weekly", "Fable", "Cloud"]
+
+
+def test_plan_row_omitted_when_unknown():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW)
+
+    assert lines[2].startswith("Weekly")
+
+
+@pytest.mark.parametrize("state,payload", [("stale-fetch", {"limits": []}), ("error", None)])
+def test_plan_row_kept_when_usage_is_unavailable(state, payload):
+    lines = plugin.render(payload, ULTRA_NOW, state, "reason", None, plan="Ultra plan")
+
+    assert lines[2].startswith("Ultra plan")
+
+
+def test_hostile_plan_label_keeps_the_line_parseable():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW, plan="Ul|tra")
+
+    assert_first_pipe_is_the_separator(lines[2])
+    assert lines[2].startswith("Ul/tra")
+
+
+# --- plan name caching ---
+
+
+@pytest.mark.parametrize(
+    "body,rate_limited,plan,wait",
+    [
+        (json.dumps(fixture("profile_ultra")).encode(), False, "Ultra plan", plugin.PROFILE_TTL_SECONDS),
+        (b'{"organization": {}}', False, "Old plan", plugin.PROFILE_TTL_SECONDS),
+        (b"not json", False, "Old plan", plugin.PROFILE_TTL_SECONDS),
+        (None, True, "Old plan", plugin.PROFILE_TTL_SECONDS),
+        (None, False, "Old plan", plugin.PROFILE_RETRY_SECONDS),
+    ],
+)
+def test_next_profile_state(body, rate_limited, plan, wait):
+    assert plugin.next_profile_state("Old plan", body, rate_limited, 1000.0) == (plan, 1000.0 + wait)
+
+
+def test_profile_round_trip_is_private_and_minimal(tmp_path):
+    path = str(tmp_path / "profile.json")
+    plugin.write_profile(path, "Ultra plan", 1234.5)
+
+    assert plugin.read_profile(path) == ("Ultra plan", 1234.5)
+    assert oct((tmp_path / "profile.json").stat().st_mode)[-3:] == "600"
+    assert sorted(json.loads((tmp_path / "profile.json").read_text())) == ["next_attempt", "plan"]
+
+
+@pytest.mark.parametrize("content", [None, "{garbage", "[]", '{"plan": "Ultra plan"}'])
+def test_profile_absent_or_corrupt_reads_as_unknown_and_due(tmp_path, content):
+    path = tmp_path / "profile.json"
+    if content is not None:
+        path.write_text(content)
+
+    assert plugin.read_profile(str(path)) == (None, 0)
+
+
+# --- request rate of a full run ---
+
+
+class FakeApi:
+    """Replaces the plugin's network and Keychain edges, counting requests."""
+
+    def __init__(self):
+        self.expires_at_ms = 4102444800000
+        self.usage_calls = 0
+        self.profile_calls = 0
+        self.usage_result = (json.dumps(fixture("ultra")).encode(), None, False)
+        self.profile_result = (json.dumps(fixture("profile_ultra")).encode(), None, False)
+
+    def read_credentials(self):
+        return "token", self.expires_at_ms, None
+
+    def fetch_usage(self, token):
+        self.usage_calls += 1
+        return self.usage_result
+
+    def fetch_profile(self, token):
+        self.profile_calls += 1
+        return self.profile_result
+
+
+@pytest.fixture
+def api(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWIFTBAR_PLUGIN_CACHE_PATH", str(tmp_path))
+    fake = FakeApi()
+    monkeypatch.setattr(plugin, "read_credentials", fake.read_credentials)
+    monkeypatch.setattr(plugin, "fetch_usage", fake.fetch_usage)
+    monkeypatch.setattr(plugin, "fetch_profile", fake.fetch_profile)
+    return fake
+
+
+def test_profile_fetched_once_across_runs_within_the_ttl(api, capsys):
+    plugin.main()
+    plugin.main()
+
+    assert api.usage_calls == 2
+    assert api.profile_calls == 1
+    assert capsys.readouterr().out.count("Ultra plan") == 2
+
+
+def test_profile_fetched_again_once_the_ttl_lapses(api):
+    plugin.write_profile(plugin.profile_file(), "Max plan", 0)
+
+    plugin.main()
+
+    assert api.profile_calls == 1
+    assert plugin.read_profile(plugin.profile_file())[0] == "Ultra plan"
+
+
+def test_profile_not_fetched_when_the_usage_fetch_fails(api):
+    api.usage_result = (None, "usage request failed (HTTP 500)", False)
+
+    plugin.main()
+
+    assert api.profile_calls == 0
+
+
+def test_profile_not_fetched_during_a_rate_limit_backoff(api):
+    plugin.write_backoff(plugin.backoff_file(), api.expires_at_ms / 1000, 1)
+
+    plugin.main()
+
+    assert api.usage_calls == 0
+    assert api.profile_calls == 0
+
+
+def test_profile_not_fetched_with_an_expired_token(api):
+    api.expires_at_ms = 0
+
+    plugin.main()
+
+    assert api.profile_calls == 0
+
+
+def test_profile_rate_limit_starts_a_backoff_but_usage_still_renders_fresh(api, capsys):
+    api.profile_result = (None, "rate limited by the API", True)
+
+    plugin.main()
+
+    until, consecutive = plugin.read_backoff(plugin.backoff_file())
+    title = capsys.readouterr().out.splitlines()[0]
+    assert until > 0
+    assert consecutive == 1
+    assert title == "W1·F2%"
+
+
+def test_profile_failure_keeps_the_cached_plan_on_screen(api, capsys):
+    plugin.write_profile(plugin.profile_file(), "Ultra plan", 0)
+    api.profile_result = (None, "profile request failed (HTTP 500)", False)
+
+    plugin.main()
+
+    assert "Ultra plan" in capsys.readouterr().out
+    assert plugin.read_profile(plugin.profile_file())[0] == "Ultra plan"
+
+
+def test_cached_plan_shows_when_the_usage_fetch_fails(api, capsys):
+    plugin.write_profile(plugin.profile_file(), "Ultra plan", api.expires_at_ms / 1000)
+    api.usage_result = (None, "usage request failed (HTTP 500)", False)
+
+    plugin.main()
+
+    assert "Ultra plan" in capsys.readouterr().out
 
 
 # --- daylight saving correctness ---

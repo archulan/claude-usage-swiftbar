@@ -1,0 +1,12 @@
+{
+  "account": {
+    "has_claude_max": true,
+    "has_claude_pro": false
+  },
+  "organization": {
+    "organization_type": "claude_max",
+    "rate_limit_tier": "default_claude_max_20x",
+    "plan_display_name": "Ultra",
+    "plan_display_label": "Ultra plan"
+  }
+}

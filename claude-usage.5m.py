@@ -30,6 +30,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 USAGE_PAGE_URL = "https://claude.ai/settings/usage"
 OAUTH_BETA = "oauth-2025-04-20"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
@@ -41,6 +42,11 @@ HTTP_TIMEOUT = 10
 # rather than another attempt on the next tick.
 BACKOFF_BASE_SECONDS = 15 * 60
 BACKOFF_MAX_SECONDS = 4 * 60 * 60
+
+# A plan rarely changes, so a daily lookup keeps the poll at one request per
+# tick against the same narrow rate limit.
+PROFILE_TTL_SECONDS = 24 * 60 * 60
+PROFILE_RETRY_SECONDS = 60 * 60
 
 # Unknown severities rank as warning: a value this plugin has never seen most
 # likely means the account is in some flavour of trouble, not that all is well.
@@ -386,6 +392,23 @@ def allowance_line(key, block, now, stale):
     return untrusted_line(text, color="gray" if stale else None)
 
 
+def extract_plan_label(profile):
+    """Returns the plan's display text from a profile document, or None.
+
+    The rate limit tier is deliberately not consulted: it keeps internal names
+    that lag behind the plan names customers see.
+    """
+    organization = profile.get("organization") if isinstance(profile, dict) else None
+    if not isinstance(organization, dict):
+        return None
+
+    for field in ("plan_display_label", "plan_display_name"):
+        value = organization.get(field)
+        if isinstance(value, str) and value.strip():
+            return sanitize(value)
+    return None
+
+
 def slot_initial(kind, entry):
     """Returns the one-letter tag naming a slot in the menu bar title.
 
@@ -434,11 +457,12 @@ def format_updated(fetched_at, now):
     return format_moment(fetched_at, now)
 
 
-def render(payload, now, state, reason, fetched_at):
+def render(payload, now, state, reason, fetched_at, plan=None):
     """Renders the full SwiftBar output as a list of lines.
 
     state is one of fresh, stale-token, stale-fetch, error; payload is the
-    parsed usage response (live or cached) or None when nothing is renderable.
+    parsed usage response (live or cached) or None when nothing is renderable;
+    plan is the plan label, or None when it is not known.
     """
     stale = state != "fresh"
     limits = payload.get("limits") if isinstance(payload, dict) else None
@@ -449,6 +473,9 @@ def render(payload, now, state, reason, fetched_at):
         worst = max(worst, severity_rank(entry.get("severity")))
 
     lines = [build_title(slots, worst, state), "---"]
+
+    if plan:
+        lines.append(untrusted_line(plan))
 
     if isinstance(payload, dict):
         reported = [slots[kind] for kind in TITLE_SLOTS if kind in slots] + extras
@@ -580,6 +607,11 @@ def fetch_usage(token):
     return fetch_json(USAGE_URL, token, "usage")
 
 
+def fetch_profile(token):
+    """Fetches the profile document; returns (body_bytes, error_reason, rate_limited)."""
+    return fetch_json(PROFILE_URL, token, "profile")
+
+
 def cache_dir():
     """Returns the state directory, preferring SwiftBar's per-plugin cache."""
     base = os.environ.get("SWIFTBAR_PLUGIN_CACHE_PATH")
@@ -596,6 +628,11 @@ def cache_file():
 def backoff_file():
     """Returns the path holding the rate-limit backoff state."""
     return os.path.join(cache_dir(), "backoff.json")
+
+
+def profile_file():
+    """Returns the path holding the cached plan label."""
+    return os.path.join(cache_dir(), "profile.json")
 
 
 def backoff_seconds(consecutive, retry_after):
@@ -644,6 +681,64 @@ def clear_backoff(path):
         os.unlink(path)
     except OSError:
         pass
+
+
+def next_profile_state(previous, body, rate_limited, now_ts):
+    """Returns (plan, next_attempt_epoch) after a profile fetch.
+
+    A failed fetch keeps the previous label, since a stale plan name is better
+    than none. Only an ordinary failure retries early: a refusal or a document
+    without a label would not improve within the hour.
+    """
+    if body is None and not rate_limited:
+        return previous, now_ts + PROFILE_RETRY_SECONDS
+
+    plan = None
+    if body is not None:
+        try:
+            plan = extract_plan_label(json.loads(body))
+        except ValueError:
+            plan = None
+    return plan or previous, now_ts + PROFILE_TTL_SECONDS
+
+
+def read_profile(path):
+    """Returns (plan, next_attempt_epoch); (None, 0) means unknown and due."""
+    try:
+        with open(path) as handle:
+            state = json.load(handle)
+        plan = state.get("plan")
+        next_attempt = finite_number(state.get("next_attempt"))
+    except (OSError, ValueError, AttributeError):
+        return None, 0
+
+    if next_attempt is None:
+        return None, 0
+    return (plan if isinstance(plan, str) else None), next_attempt
+
+
+def write_profile(path, plan, next_attempt):
+    """Records the plan label and next fetch time, best effort.
+
+    Only these two values are kept because the full profile carries the
+    account's name and email address.
+    """
+    _write_private(path, json.dumps({"plan": plan, "next_attempt": next_attempt}).encode())
+
+
+def refresh_plan(token, plan, next_attempt, now_ts):
+    """Refreshes the cached plan label when due; returns the label to show."""
+    if now_ts < next_attempt:
+        return plan
+
+    body, _, rate_limited = fetch_profile(token)
+    plan, next_attempt = next_profile_state(plan, body, rate_limited, now_ts)
+    write_profile(profile_file(), plan, next_attempt)
+
+    if rate_limited:
+        # Same host as the usage endpoint, so the throttle is assumed shared.
+        write_backoff(backoff_file(), now_ts + backoff_seconds(1, None), 1)
+    return plan
 
 
 def is_usage_payload(payload):
@@ -742,6 +837,7 @@ def main():
     path = cache_file()
     backoff_path = backoff_file()
     blocked_until, consecutive = read_backoff(backoff_path)
+    plan, next_profile_attempt = read_profile(profile_file())
     token, expires_at_ms, cred_reason = read_credentials()
 
     if now.timestamp() < blocked_until:
@@ -764,7 +860,8 @@ def main():
         if payload is not None:
             write_cache(path, body)
             clear_backoff(backoff_path)
-            print("\n".join(render(payload, now, "fresh", None, now)))
+            plan = refresh_plan(token, plan, next_profile_attempt, now.timestamp())
+            print("\n".join(render(payload, now, "fresh", None, now, plan=plan)))
             return
 
         if rate_limited:
@@ -784,9 +881,9 @@ def main():
 
     cached, fetched_at = read_cache(path)
     if cached is not None:
-        print("\n".join(render(cached, now, state, reason, fetched_at)))
+        print("\n".join(render(cached, now, state, reason, fetched_at, plan=plan)))
     else:
-        print("\n".join(render(None, now, "error", reason, None)))
+        print("\n".join(render(None, now, "error", reason, None, plan=plan)))
 
 
 if __name__ == "__main__":
