@@ -50,8 +50,12 @@ SEVERITY_COLOR = {1: "orange", 2: "red"}
 
 CURRENCY_SYMBOL = {"USD": "$", "AUD": "A$", "EUR": "€", "GBP": "£"}
 
-# The three limit kinds the claude.ai settings page renders, in display order.
+# Display order of the limit kinds with a menu bar slot. Plans differ in which
+# of these they have, so only the kinds the API reports are shown.
 TITLE_SLOTS = ("session", "weekly_all", "weekly_scoped")
+
+# A word rather than an empty string, which would hide the menu bar item.
+EMPTY_TITLE = "Claude"
 
 
 # --- pure rendering layer ---
@@ -322,19 +326,18 @@ def build_title(slots, worst, state):
     legible, so state and severity are carried by a symbol and the digits keep
     the system colour that always adapts.
     """
-    digits = "·".join(
-        slot_initial(kind, slots.get(kind)) + percent_text(slots.get(kind)) for kind in TITLE_SLOTS
-    ) + "%"
+    tagged = [slot_initial(kind, slots[kind]) + percent_text(slots[kind]) for kind in TITLE_SLOTS if kind in slots]
+    text = "·".join(tagged) + "%" if tagged else EMPTY_TITLE
 
     if state == "stale-token":
-        return line(digits, sfimage="clock")
+        return line(text, sfimage="clock")
     if state == "stale-fetch":
-        return line(digits, sfimage="exclamationmark.triangle")
+        return line(text, sfimage="exclamationmark.triangle")
     if state == "error":
         return line("", sfimage="exclamationmark.triangle")
     if worst >= 1:
-        return line(digits, sfimage="exclamationmark.triangle")
-    return line(digits)
+        return line(text, sfimage="exclamationmark.triangle")
+    return line(text)
 
 
 def format_updated(fetched_at, now):
@@ -359,10 +362,11 @@ def render(payload, now, state, reason, fetched_at):
     lines = [build_title(slots, worst, state), "---"]
 
     if isinstance(payload, dict):
-        for kind in TITLE_SLOTS:
-            lines.append(limit_line(slots.get(kind, {"kind": kind}), now, stale))
-        for entry in extras:
+        reported = [slots[kind] for kind in TITLE_SLOTS if kind in slots] + extras
+        for entry in reported:
             lines.append(limit_line(entry, now, stale))
+        if not reported:
+            lines.append(line("No usage limits reported", color="gray"))
 
         credits = spend_line(payload.get("spend"))
         if credits:

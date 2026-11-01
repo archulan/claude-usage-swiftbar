@@ -21,6 +21,7 @@ plugin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(plugin)
 
 NOW = datetime(2026, 8, 4, 15, 0, tzinfo=timezone(timedelta(hours=10)))
+ULTRA_NOW = datetime(2026, 11, 2, 9, 0, tzinfo=timezone(timedelta(hours=11)))
 
 
 def fixture(name):
@@ -40,17 +41,38 @@ def title_text(lines):
 # --- menu bar title ---
 
 
-def test_title_shows_three_slots_when_fresh():
+def test_title_shows_every_slot_when_the_plan_has_a_session():
     lines = plugin.render(fixture("normal"), NOW, "fresh", None, NOW)
 
     assert title_text(lines) == "S7·W42·F13%"
     assert "color=" not in title_of(lines)
 
 
-def test_title_renders_dash_for_missing_slots():
+def test_title_omits_slots_the_api_does_not_report():
     lines = plugin.render(fixture("sparse"), NOW, "fresh", None, NOW)
 
-    assert title_text(lines) == "S7·W-·M-%"
+    assert title_text(lines) == "S7%"
+
+
+def test_ultra_title_has_no_session_slot():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW)
+
+    assert title_text(lines) == "W1·F2%"
+    assert "sfimage=" not in title_of(lines)
+
+
+def test_ultra_dropdown_has_no_session_row():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW)
+
+    assert not any(rendered.startswith("Session") for rendered in lines)
+
+
+def test_ultra_weekly_row_shows_the_reset_time():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW)
+
+    assert any(
+        rendered.startswith("Weekly (all models) 1% · resets Sun 19:00 (in 6d 10h)") for rendered in lines
+    )
 
 
 def test_title_initial_follows_the_model_the_api_reports():
@@ -79,7 +101,7 @@ def test_unnamed_model_falls_back_without_colliding_with_weekly(entry):
     assert initial != plugin.slot_initial("weekly_all", {})
 
 
-@pytest.mark.parametrize("name", ["normal", "warning", "exceeded", "unknown", "sparse"])
+@pytest.mark.parametrize("name", ["normal", "warning", "exceeded", "unknown", "sparse", "ultra"])
 def test_title_is_never_coloured(name):
     # The menu bar is translucent, so text colour is resolved from a signal
     # that cannot see the wallpaper behind it. Only symbols stay legible.
@@ -463,13 +485,36 @@ def test_non_finite_percent_renders_dash_instead_of_crashing(literal):
     payload = json.loads('{"limits": [{"kind": "session", "percent": %s}]}' % literal)
     lines = plugin.render(payload, NOW, "fresh", None, NOW)
 
-    assert title_text(lines) == "S-·W-·M-%"
+    assert title_text(lines) == "S-%"
+    assert any(rendered.startswith("Session - ") for rendered in lines)
 
 
-def test_all_missing_slots_title_is_not_a_submenu_marker():
-    lines = plugin.render({"limits": []}, NOW, "fresh", None, NOW)
+@pytest.mark.parametrize("state", ["fresh", "stale-fetch"])
+@pytest.mark.parametrize(
+    "limits",
+    [[], [None, 3, "x"], [{"kind": "monthly_beta", "percent": 5}]],
+)
+def test_title_without_known_slots_is_a_readable_word(limits, state):
+    lines = plugin.render({"limits": limits}, NOW, state, "reason", NOW)
 
+    assert title_text(lines) == plugin.EMPTY_TITLE
+    # SwiftBar treats a leading "--" as a submenu marker.
     assert not title_text(lines).startswith("--")
+
+
+@pytest.mark.parametrize("limits", [[], [None, 3, "x"]])
+def test_dropdown_says_so_when_no_limits_are_reported(limits):
+    lines = plugin.render({"limits": limits}, NOW, "fresh", None, NOW)
+
+    assert any(rendered.startswith("No usage limits reported") for rendered in lines)
+
+
+def test_dropdown_stays_quiet_when_only_unknown_limits_are_reported():
+    payload = {"limits": [{"kind": "monthly_beta", "percent": 5}]}
+    lines = plugin.render(payload, NOW, "fresh", None, NOW)
+
+    assert not any(rendered.startswith("No usage limits reported") for rendered in lines)
+    assert any(rendered.startswith("Monthly Beta 5%") for rendered in lines)
 
 
 # --- daylight saving correctness ---
