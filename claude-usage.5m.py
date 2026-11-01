@@ -57,6 +57,14 @@ TITLE_SLOTS = ("session", "weekly_all", "weekly_scoped")
 # A word rather than an empty string, which would hide the menu bar item.
 EMPTY_TITLE = "Claude"
 
+# Dollar allowances sit under opaque keys, so the labels the settings page uses
+# are mapped by hand as (label, expiry verb), in display order.
+KNOWN_ALLOWANCES = {"iguana_necktie": ("Cloud session credits", "expires")}
+
+# Blocks with the allowance shape that other rows already cover, matched
+# exactly or as a prefix so that seven_day_opus and the like are caught too.
+ALLOWANCE_EXCLUDED = ("five_hour", "seven_day", "spend", "extra_usage")
+
 
 # --- pure rendering layer ---
 
@@ -146,6 +154,20 @@ def scoped_model_name(entry):
     return None
 
 
+def finite_number(value):
+    """Returns value as a float, or None when it is unusable as a number.
+
+    json.loads accepts NaN and Infinity, and builds ints too large for float().
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def limit_label(entry):
     """Returns the display name for a limit entry."""
     kind = entry.get("kind")
@@ -165,11 +187,8 @@ def percent_text(entry):
     """Returns the whole-number percent for an entry, or a dash when unusable."""
     if not isinstance(entry, dict):
         return "-"
-    percent = entry.get("percent")
-    if isinstance(percent, bool) or not isinstance(percent, (int, float)):
-        return "-"
-    # json.loads accepts NaN and Infinity, both of which explode in int().
-    if not math.isfinite(percent):
+    percent = finite_number(entry.get("percent"))
+    if percent is None:
         return "-"
     return str(int(round(percent)))
 
@@ -231,8 +250,8 @@ def format_moment(moment, now):
     return "{} {}".format(local.day, local.strftime("%b %H:%M"))
 
 
-def resets_clause(value, now):
-    """Returns the "resets ..." fragment for a limit line, or None to omit it."""
+def resets_clause(value, now, verb="resets"):
+    """Returns the "resets ..." fragment for a line, or None to omit it."""
     reset = parse_reset(value)
 
     if reset is None:
@@ -240,8 +259,8 @@ def resets_clause(value, now):
     if reset <= now:
         # A reset in the past just means the API has not rolled the window
         # yet; the next refresh self-heals, so no alarm styling.
-        return "resets soon"
-    return "resets {} ({})".format(format_moment(reset, now), format_countdown(reset, now))
+        return verb + " soon"
+    return "{} {} ({})".format(verb, format_moment(reset, now), format_countdown(reset, now))
 
 
 def limit_line(entry, now, stale):
@@ -291,10 +310,80 @@ def spend_line(spend):
     if not _money_block_ok(used) or not _money_block_ok(limit):
         return None
 
-    return "Credits: {} / {}".format(
+    return "Usage credits: {} / {}".format(
         format_money(used["amount_minor"], used["exponent"], used.get("currency")),
         format_money(limit["amount_minor"], limit["exponent"], limit.get("currency")),
     )
+
+
+def format_dollars(value):
+    """Formats dollars whole, rounded down so a balance is never overstated."""
+    return "${:,}".format(math.floor(value))
+
+
+def is_limit_mirror(key):
+    """Checks whether a payload key is already covered by another dropdown row."""
+    return any(key == name or key.startswith(name + "_") for name in ALLOWANCE_EXCLUDED)
+
+
+def dollar_allowances(payload):
+    """Returns (key, block) for each dollar allowance in the payload.
+
+    Allowances sit under opaque keys that change without notice, so they are
+    found by shape: a positive dollar limit and a usable balance. Keys with a
+    known label come first, in the order the settings page uses.
+    """
+    found = []
+
+    for key, block in payload.items():
+        if is_limit_mirror(key) or not isinstance(block, dict):
+            continue
+        limit = finite_number(block.get("limit_dollars"))
+        if limit is None or limit <= 0:
+            continue
+        if finite_number(block.get("remaining_dollars")) is None and finite_number(block.get("used_dollars")) is None:
+            continue
+        found.append((key, block))
+
+    known = list(KNOWN_ALLOWANCES)
+    found.sort(key=lambda item: (known.index(item[0]) if item[0] in known else len(known), item[0]))
+    return found
+
+
+def allowance_terms(key):
+    """Returns (label, expiry verb) for an allowance key.
+
+    An unknown key says "resets", the literal field name, because what the
+    date means for it is not known.
+    """
+    return KNOWN_ALLOWANCES.get(key) or (sanitize(key.replace("_", " ").title()), "resets")
+
+
+def allowance_line(key, block, now, stale):
+    """Renders one dropdown line for a dollar allowance.
+
+    The line never carries a severity colour: running out of an allowance
+    falls back to the plan's regular limits, so it is not an alarm.
+    """
+    label, verb = allowance_terms(key)
+    resets_at = block.get("resets_at")
+    expiry = parse_reset(resets_at)
+
+    if verb == "expires" and expiry is not None and expiry <= now:
+        return untrusted_line(label + ": expired", color="gray")
+
+    limit = finite_number(block.get("limit_dollars"))
+    remaining = finite_number(block.get("remaining_dollars"))
+    if remaining is None:
+        remaining = limit - finite_number(block.get("used_dollars"))
+
+    text = "{}: {} of {} left".format(label, format_dollars(max(remaining, 0)), format_dollars(limit))
+
+    clause = resets_clause(resets_at, now, verb)
+    if clause:
+        text += " · " + clause
+
+    return untrusted_line(text, color="gray" if stale else None)
 
 
 def slot_initial(kind, entry):
@@ -367,6 +456,9 @@ def render(payload, now, state, reason, fetched_at):
             lines.append(limit_line(entry, now, stale))
         if not reported:
             lines.append(line("No usage limits reported", color="gray"))
+
+        for key, block in dollar_allowances(payload):
+            lines.append(allowance_line(key, block, now, stale))
 
         credits = spend_line(payload.get("spend"))
         if credits:

@@ -225,7 +225,7 @@ def test_shortcode_expansion_is_disabled_on_api_controlled_lines():
     # Only lines carrying API text need it; the title must keep its sfimage
     # behaviour untouched.
     lines = plugin.render(fixture("normal"), NOW, "fresh", None, NOW)
-    api_lines = [r for r in lines if r.startswith(("Session", "Weekly", "Fable", "Credits"))]
+    api_lines = [r for r in lines if r.startswith(("Session", "Weekly", "Fable", "Usage credits"))]
 
     assert len(api_lines) == 4
     for rendered in api_lines:
@@ -319,7 +319,7 @@ def test_money_formatting(amount, exponent, currency, expected):
 def test_spend_line_renders_used_and_limit():
     rendered = plugin.spend_line(fixture("normal")["spend"])
 
-    assert rendered == "Credits: $0.00 / $50.00"
+    assert rendered == "Usage credits: $0.00 / $50.00"
 
 
 @pytest.mark.parametrize(
@@ -337,7 +337,7 @@ def test_spend_line_omitted_when_missing_disabled_or_malformed(spend):
 def test_render_omits_credits_line_when_spend_disabled():
     lines = plugin.render(fixture("unknown"), NOW, "fresh", None, NOW)
 
-    assert not any("Credits:" in rendered for rendered in lines)
+    assert not any("Usage credits:" in rendered for rendered in lines)
 
 
 # --- unknown limit kinds ---
@@ -347,6 +347,159 @@ def test_unknown_kind_renders_generically_in_dropdown():
     lines = plugin.render(fixture("unknown"), NOW, "fresh", None, NOW)
 
     assert any(rendered.split(" | ")[0].startswith("Monthly Beta 55%") for rendered in lines)
+
+
+# --- dollar allowances ---
+
+
+def credits_block(**overrides):
+    """Builds an allowance block shaped like the live cloud session credits."""
+    block = {
+        "utilization": 1.49,
+        "resets_at": "2026-11-05T07:59:00+00:00",
+        "limit_dollars": 250,
+        "used_dollars": 3.73,
+        "remaining_dollars": 246.27,
+        "locked_reason": None,
+    }
+    block.update(overrides)
+    return block
+
+
+def allowance_text(block, key="iguana_necktie"):
+    """Returns the text of an allowance row, without its parameters."""
+    return plugin.allowance_line(key, block, ULTRA_NOW, False).split(" | ")[0]
+
+
+def test_cloud_credits_row_shows_dollars_left_and_expiry():
+    rendered = plugin.allowance_line("iguana_necktie", fixture("ultra")["iguana_necktie"], ULTRA_NOW, False)
+
+    assert rendered == (
+        "Cloud session credits: $246 of $250 left · expires Thu 18:59 (in 3d 9h)"
+        " | emojize=false symbolize=false"
+    )
+
+
+def test_ultra_dropdown_lists_cloud_credits_after_the_limits():
+    lines = plugin.render(fixture("ultra"), ULTRA_NOW, "fresh", None, ULTRA_NOW)
+    labels = [rendered.split(" ")[0] for rendered in lines]
+
+    assert labels.index("Cloud") == labels.index("Fable") + 1
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        None,
+        "x",
+        [],
+        {},
+        credits_block(limit_dollars=None),
+        credits_block(limit_dollars=0),
+        credits_block(limit_dollars=-5),
+        credits_block(limit_dollars=True),
+        credits_block(limit_dollars=float("nan")),
+        credits_block(limit_dollars="250"),
+        credits_block(remaining_dollars=None, used_dollars=None),
+        # Blocks that track a limit as a percentage share this shape.
+        {"utilization": 0.0, "resets_at": None, "limit_dollars": None, "remaining_dollars": None},
+    ],
+)
+def test_allowance_skipped_when_null_or_malformed(block):
+    assert plugin.dollar_allowances({"copper_kite": block}) == []
+
+
+def test_remaining_dollars_derived_from_used_when_absent():
+    block = credits_block(remaining_dollars=None, used_dollars=3.73)
+
+    assert allowance_text(block).startswith("Cloud session credits: $246 of $250 left")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"remaining_dollars": -5}, {"remaining_dollars": None, "used_dollars": 300}],
+)
+def test_remaining_dollars_never_goes_below_zero(overrides):
+    assert allowance_text(credits_block(**overrides)).startswith("Cloud session credits: $0 of $250 left")
+
+
+def test_exhausted_allowance_has_no_colour_and_no_title_symbol():
+    payload = dict(fixture("ultra"), iguana_necktie=credits_block(remaining_dollars=0))
+    lines = plugin.render(payload, ULTRA_NOW, "fresh", None, ULTRA_NOW)
+    row = next(rendered for rendered in lines if rendered.startswith("Cloud session credits"))
+
+    assert "color=" not in row
+    assert "sfimage=" not in title_of(lines)
+
+
+def test_expired_allowance_reads_expired_in_grey():
+    block = credits_block(resets_at="2026-11-01T00:00:00+00:00")
+    rendered = plugin.allowance_line("iguana_necktie", block, ULTRA_NOW, False)
+
+    assert rendered.split(" | ")[0] == "Cloud session credits: expired"
+    assert "color=gray" in rendered
+
+
+@pytest.mark.parametrize("value", [None, "garbage"])
+def test_expiry_clause_dropped_when_resets_at_missing_or_garbage(value):
+    assert allowance_text(credits_block(resets_at=value)) == "Cloud session credits: $246 of $250 left"
+
+
+def test_allowance_row_is_grey_when_stale():
+    rendered = plugin.allowance_line("iguana_necktie", credits_block(), ULTRA_NOW, True)
+
+    assert "color=gray" in rendered
+
+
+@pytest.mark.parametrize("key", ["five_hour", "seven_day", "seven_day_opus", "spend", "extra_usage"])
+def test_blocks_covered_by_other_rows_are_not_allowances(key):
+    assert plugin.dollar_allowances({key: credits_block()}) == []
+
+
+def test_unknown_codename_gets_a_generic_label_and_the_literal_field_name():
+    block = credits_block(limit_dollars=10, remaining_dollars=4)
+
+    assert allowance_text(block, "copper_kite") == "Copper Kite: $4 of $10 left · resets Thu 18:59 (in 3d 9h)"
+
+
+def test_allowances_list_known_keys_first_then_by_key():
+    payload = {"zebra": credits_block(), "apple": credits_block(), "iguana_necktie": credits_block()}
+
+    assert [key for key, _ in plugin.dollar_allowances(payload)] == ["iguana_necktie", "apple", "zebra"]
+
+
+def test_hostile_allowance_key_keeps_the_line_parseable():
+    assert_first_pipe_is_the_separator(plugin.allowance_line("a|b", credits_block(), ULTRA_NOW, False))
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(246.27, "$246"), (246.99, "$246"), (250, "$250"), (1000, "$1,000"), (0.4, "$0"), (0, "$0")],
+)
+def test_dollars_render_as_whole_dollars_rounded_down(value, expected):
+    assert plugin.format_dollars(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (3, 3.0),
+        (2.5, 2.5),
+        (True, None),
+        ("3", None),
+        (None, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        # json.loads builds arbitrarily large ints, which overflow float().
+        (10 ** 400, None),
+    ],
+)
+def test_finite_number_rejects_everything_but_usable_numbers(value, expected):
+    assert plugin.finite_number(value) == expected
+
+
+def test_oversized_percent_renders_dash_instead_of_crashing():
+    assert plugin.percent_text({"percent": 10 ** 400}) == "-"
 
 
 # --- cache round-trip (only non-pure test; exercises real files in tmp_path) ---
